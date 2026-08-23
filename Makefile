@@ -4,65 +4,34 @@ INPUT = $(HOME)/q/office/accounting/blais.beancount
 DOWNLOADS = $(HOME)/u/Downloads
 TOOLS=./tools
 
-PYTHON ?= python3
-PYLINT ?= $(PYTHON) -m pylint
-LEX = flex
-YACC = bison
-YFLAGS = --report=itemset --verbose -Wall -Werror
+PYTHON ?= uv run python
+MESON ?= uv run meson
+NINJA ?= ninja
 GRAPHER = dot
 
-
-# Support PYTHON being the path to a python interpreter.
-PYVERSION = $(shell $(PYTHON) -c 'import platform; print(".".join(platform.python_version_tuple()[:2]))')
-PYCONFIG = "python$(PYVERSION)-config"
-CFLAGS += $(shell $(PYCONFIG) --cflags) -I$(PWD) -fPIE -UNDEBUG -Wno-unused-function -Wno-unused-variable
-LDFLAGS += $(shell $(PYCONFIG) --embed --ldflags)
-LDLIBS += $(shell $(PYCONFIG) --embed --libs)
+PYMODEXT = $(shell $(PYTHON) -c 'import importlib.machinery; print(importlib.machinery.EXTENSION_SUFFIXES[0])')
+PYTAG = $(shell $(PYTHON) -c 'import sys; print(f"cp{sys.version_info.major}{sys.version_info.minor}")')
+MESON_BUILD_DIR = build/$(PYTAG)
 
 all: build
 
-# Clean everything up.
 clean:
-	rm -f core
 	rm -rf build
-	rm -f $(CROOT)/grammar.h $(CROOT)/grammar.c
-	rm -f $(CROOT)/lexer.h $(CROOT)/lexer.c
-	rm -f $(CROOT)/*.so
-	rm -f $(CROOT)/tokens_test
 	find . -name __pycache__ -exec rm -r "{}" \; -prune
 
-# Targets to generate and compile the C parser.
-CROOT = beancount/parser
-
-$(CROOT)/grammar.c $(CROOT)/grammar.h: $(CROOT)/grammar.y
-	$(YACC) $(YFLAGS) -o $(CROOT)/grammar.c $<
-
-$(CROOT)/lexer.c $(CROOT)/lexer.h: $(CROOT)/lexer.l $(CROOT)/grammar.h
-	$(LEX) --outfile=$(CROOT)/lexer.c --header-file=$(CROOT)/lexer.h $<
-
-
-SOURCES =					\
-	$(CROOT)/decimal.c			\
-	$(CROOT)/decimal.h 			\
-	$(CROOT)/lexer.c			\
-	$(CROOT)/lexer.h			\
-	$(CROOT)/grammar.c			\
-	$(CROOT)/grammar.h			\
-	$(CROOT)/macros.h			\
-	$(CROOT)/tokens.h
-
 .PHONY: build
-build: $(SOURCES)
-	$(PYTHON) setup.py build_ext -i
-
-$(CROOT)/tokens_test: $(CROOT)/tokens_test.o $(CROOT)/tokens.o $(CROOT)/decimal.o
+build:
+	$(MESON) setup $(MESON_BUILD_DIR)/ -Dtests=enabled --reconfigure || \
+	$(MESON) setup $(MESON_BUILD_DIR)/ -Dtests=enabled --wipe || \
+	(rm -rf $(MESON_BUILD_DIR)/ && $(MESON) setup $(MESON_BUILD_DIR)/ -Dtests=enabled)
+	$(NINJA) -C $(MESON_BUILD_DIR)/
+	cp $(MESON_BUILD_DIR)/_parser*.so beancount/parser/
 
 .PHONY: ctest
-ctest: $(CROOT)/tokens_test
-	$(CROOT)/tokens_test
-
-build35: $(SOURCES)
-	python3.5 setup.py build_ext -i
+ctest:
+	$(MESON) setup $(MESON_BUILD_DIR)/ -Dtests=enabled --reconfigure || \
+	$(MESON) setup $(MESON_BUILD_DIR)/ -Dtests=enabled
+	$(MESON) test -C $(MESON_BUILD_DIR)/
 
 
 # Dump the lexer parsed output. This can be used to check across languages.
@@ -107,8 +76,6 @@ CLUSTERS_REGEXPS =							\
 	beancount/utils			 	utils			\
 	beancount/web/.*_test\.py	 	web/tests		\
 	beancount/web			 	web			\
-	beancount/query/.*_test\.py	 	query/tests		\
-	beancount/query			 	query			\
 	beancount/load.*_test\.py	 	load/tests		\
 	beancount/load.*\.py		 	load			\
 	beancount                        	load
@@ -138,21 +105,16 @@ showdeps-core: build/beancount-core.pdf
 debug:
 	gdb --args $(PYTHON) /home/blais/p/beancount/bin/bean-sandbox $(INPUT)
 
-# Bake a release, upload the source.
-release:
-	python3 setup.py sdist bdist_wheel
-	twine upload dist/*.tar.gz
-
-vtest vtests verbose-test verbose-tests:
+vtest vtests verbose-test verbose-tests: build
 	$(PYTHON) -m pytest -v -s beancount examples
 
-qtest qtests quiet-test quiet-tests test tests:
+qtest qtests quiet-test quiet-tests test tests: build
 	$(PYTHON) -m pytest beancount
 
-test-last test-last-failed test-failed:
+test-last test-last-failed test-failed: build
 	$(PYTHON) -m pytest --last-failed beancount
 
-test-naked:
+test-naked: build
 	PATH=/bin:/usr/bin PYTHONPATH= $(PYTHON) -m pytest -x beancount
 
 # Run the parser and measure its performance.
@@ -161,25 +123,10 @@ check:
 	bean-check $(INPUT)
 
 
-# Run the demo program.
-demo:
-	bin/bean-web --debug examples/demo.beancount
-
-
 # Generate the example file.
 EXAMPLE=examples/example.beancount
 example $(EXAMPLE):
 	./bin/bean-example --seed=0 -o $(EXAMPLE)
-
-
-# Run the web server.
-.PHONY: web
-web:
-	bean-web --debug $(INPUT)
-
-.PHONY: web-incognito
-web-incognito:
-	bean-web --incognito --debug $(INPUT)
 
 
 # Run the importer.
@@ -192,17 +139,8 @@ import:
 sandbox:
 	bean-sandbox $(INPUT)
 
-missing-tests:
-	$(TOOLS)/find_missing_tests.py beancount
-
 fixmes:
 	egrep -srn '\b(FIXME|TODO\()' beancount || true
-
-filter-terms:
-	egrep --exclude-dir='.hg' --exclude-dir='__pycache__' -srn 'GOOGL?\b' $(PWD) | grep -v GOOGLE_APIS || true
-
-multi-imports:
-	(egrep -srn '^(from.*)?import.*,' beancount | grep -v 'from typing') || true
 
 # Check for unused imports.
 sfood-checker:
@@ -212,27 +150,11 @@ sfood-checker:
 constraints dep-constraints: build/beancount.deps
 	$(TOOLS)/dependency_constraints.py $<
 
-
-# Run the linter on all source code.
-# To list all messages, call: "pylint --list-msgs"
-LINT_SRCS =					\
-  beancount					\
-  bin/*						\
-  tools/*.py
-
-pylint lint:
-	$(PYLINT) $(LINT_SRCS)
-
-LINT_TESTS=useless-suppression,empty-docstring
-pylint-only:
-	$(PYLINT) --disable=all --enable=$(LINT_TESTS) $(LINT_SRCS)
-
-pyflakes:
-	pyflakes $(LINT_SRCS)
-
+pc precommit:
+	uvx pre-commit run --all-files
 
 # Check everything.
-status check: pylint pyflakes filter-terms missing-tests dep-constraints multi-imports test
+status check: precommit dep-constraints test
 
 
 # Experimental docs conversion.
@@ -241,20 +163,6 @@ download-pdf:
 
 download-odt:
 	./tools/download_docs.py odt $(HOME)/p/beancount-downloads/odt
-
-sphinx sphinx_odt2rst:
-	./tools/sphinx_odt2rst.py $(HOME)/p/beancount-downloads/odt $(HOME)/p/beancount-docs
-
-convert_test:
-	./tools/convert_doc.py --cache=/tmp/convert_test.cache '1WjARst_cSxNE-Lq6JnJ5CC41T3WndEsiMw4d46r2694' /tmp/trading.md
-
-# This does not work well; import errors just won't go away, it's slow, and it
-# seems you have to pregenerate all .pyi to do anything useful.
-pytype:
-	find $(PWD)/beancount -name '*.py' | parallel -j16  pytype --pythonpath=$(PWD) -o {}i {}
-
-pytype1:
-	pytype --pythonpath=$(PWD) beancount/utils/net_utils.py
 
 links bazel-link:
 	rm -f beancount/parser/_parser.so

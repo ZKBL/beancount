@@ -2,14 +2,11 @@
 
 This is meant to be used as an error diagnostic tool.
 """
-__copyright__ = "Copyright (C) 2016  Martin Blais"
+
+__copyright__ = "Copyright (C) 2014-2021, 2023-2026  Martin Blais"
 __license__ = "GNU GPLv2"
 
 import sys
-import types
-
-
-# pylint: disable=import-outside-toplevel
 
 
 def list_dependencies(file=sys.stderr):
@@ -20,11 +17,14 @@ def list_dependencies(file=sys.stderr):
     """
     print("Dependencies:")
     for package, version, sufficient in check_dependencies():
-        print("   {:16}: {} {}".format(
-            package,
-            version or 'NOT INSTALLED',
-            "(INSUFFICIENT)" if version and not sufficient else ""),
-              file=file)
+        print(
+            "   {:16}: {} {}".format(
+                package,
+                version or "NOT INSTALLED",
+                "(INSUFFICIENT)" if version and not sufficient else "",
+            ),
+            file=file,
+        )
 
 
 def check_dependencies():
@@ -38,69 +38,23 @@ def check_dependencies():
       Beancount.
     """
     return [
-        # Check for a complete installation of Python itself.
         check_python(),
-        check_cdecimal(),
-
-        # Modules we really do need installed.
-        check_import('dateutil'),
-        check_import('ply', module_name='ply.yacc', min_version='3.4'),
-
-        # Optionally required to upload data to Google Drive.
-        check_import('googleapiclient'),
-        check_import('oauth2client'),
-        check_import('httplib2'),
-
-        # Optionally required to support various price source fetchers.
-        check_import('requests', min_version='2.0'),
-
-        # Optionally required to support imports (identify, extract, file) code.
-        check_python_magic(),
-        ]
+        check_import("dateutil"),
+    ]
 
 
 def check_python():
-    """Check that Python 3.3 or above is installed.
+    """Check that Python 3.7 or above is installed.
 
     Returns:
       A triple of (package-name, version-number, sufficient) as per
       check_dependencies().
     """
-    return ('python3',
-            '.'.join(map(str, sys.version_info[:3])),
-            sys.version_info[:2] >= (3, 3))
-
-
-def is_fast_decimal(decimal_module):
-    "Return true if a fast C decimal implementation is installed."
-    return isinstance(decimal_module.Decimal().sqrt, types.BuiltinFunctionType)
-
-
-def check_cdecimal():
-    """Check that Python 3.3 or above is installed.
-
-    Returns:
-      A triple of (package-name, version-number, sufficient) as per
-      check_dependencies().
-    """
-    # Note: this code mirrors and should be kept in-sync with that at the top of
-    # beancount.core.number.
-
-    # Try the built-in installation.
-    import decimal
-    if is_fast_decimal(decimal):
-        return ('cdecimal', '{} (built-in)'.format(decimal.__version__), True)
-
-    # Try an explicitly installed version.
-    try:
-        import cdecimal
-        if is_fast_decimal(cdecimal):
-            return ('cdecimal', getattr(cdecimal, '__version__', 'OKAY'), True)
-    except ImportError:
-        pass
-
-    # Not found.
-    return ('cdecimal', None, False)
+    return (
+        "python3",
+        ".".join(map(str, sys.version_info[:3])),
+        sys.version_info[:2] >= (3, 7),
+    )
 
 
 def check_python_magic():
@@ -116,14 +70,15 @@ def check_python_magic():
       check_dependencies().
     """
     try:
-        import magic
+        import magic  # type: ignore # noqa: PLC0415, I001
+
         # Check that python-magic and not filemagic is installed.
-        if not hasattr(magic, 'from_file'):
+        if not hasattr(magic, "from_file"):
             # 'filemagic' is installed; install python-magic.
             raise ImportError
-        return ('python-magic', 'OK', True)
+        return ("python-magic", "OK", True)
     except (ImportError, OSError):
-        return ('python-magic', None, False)
+        return ("python-magic", None, False)
 
 
 def check_import(package_name, min_version=None, module_name=None):
@@ -149,8 +104,11 @@ def check_import(package_name, min_version=None, module_name=None):
         if min_version is not None:
             version = module.__version__
             assert isinstance(version, str)
-            is_sufficient = (parse_version(version) >= parse_version(min_version)
-                             if min_version else True)
+            is_sufficient = (
+                parse_version(version) >= parse_version(min_version)
+                if min_version
+                else True
+            )
         else:
             version, is_sufficient = None, True
     except ImportError:
@@ -158,10 +116,16 @@ def check_import(package_name, min_version=None, module_name=None):
     return (package_name, version, is_sufficient)
 
 
-def parse_version(version_str: str) -> str:
-    """Parse the version string into a comparable tuple."""
-    return [int(v) for v in version_str.split('.')]
+def parse_version(version_str: str) -> list[int]:
+    """Parse the version string into a comparable tuple.
+
+    Args:
+      version_str: A string representing the version.
+    Returns:
+      A list of integers representing the version components.
+    """
+    return [int(v) for v in version_str.split(".")]
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     list_dependencies(sys.stdout)

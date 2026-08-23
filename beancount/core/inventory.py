@@ -23,7 +23,7 @@ simply leave the 'cost' as None. This is the case for most of the transactions.
 
 = Conversions =
 
-If it often desired to convert this inventory into an equivalent position for
+It is often desired to convert this inventory into an equivalent position for
 its cost, or to just flatten all the positions with the same currency and count
 the number of units, or to compute the market value for the inventory at a
 specific date. You do these conversions using the reduce() method:
@@ -33,24 +33,31 @@ specific date. You do these conversions using the reduce() method:
   inventory.reduce(convert.get_value, price_map, date)
 
 """
-__copyright__ = "Copyright (C) 2013-2017  Martin Blais"
+
+from __future__ import annotations
+
+__copyright__ = "Copyright (C) 2013-2022, 2024-2026  Martin Blais"
 __license__ = "GNU GPLv2"
 
 import collections
-from collections.abc import Iterable
-from decimal import Decimal
 import enum
 import re
+from collections.abc import Iterable
+from decimal import Decimal
+from typing import TYPE_CHECKING
+from typing import Optional
 
+from beancount.core import convert
+from beancount.core.amount import Amount
+from beancount.core.display_context import DEFAULT_FORMATTER
 from beancount.core.number import ZERO
 from beancount.core.number import same_sign
-from beancount.core.amount import Amount
 from beancount.core.position import Cost
 from beancount.core.position import Position
 from beancount.core.position import from_string as position_from_string
-from beancount.core import convert
-from beancount.core.display_context import DEFAULT_FORMATTER
 
+if TYPE_CHECKING:
+    from beancount.core import data
 
 # Enable this in tests to assert types being passed to Inventory.
 ASSERTS_TYPES = False
@@ -58,6 +65,7 @@ ASSERTS_TYPES = False
 
 class MatchResult(enum.Enum):
     """Result of booking a new lot to an existing inventory."""
+
     # A new lot was created.
     CREATED = 1
     # An existing lot was reduced.
@@ -70,11 +78,10 @@ class MatchResult(enum.Enum):
 
 # FIXME: You should disallow __getitem__, __delitem__ and __setitem__.
 # Move the dict inside the container.
-class Inventory(dict):
-    """An Inventory is a set of positions, indexed for efficiency.
-    """
+class Inventory(dict[tuple[str, Optional[Cost]], Position]):
+    """An Inventory is a set of positions, indexed for efficiency."""
 
-    def __init__(self, positions=None):
+    def __init__(self, positions=None) -> None:
         """Create a new inventory using a list of existing positions.
 
         Args:
@@ -105,13 +112,12 @@ class Inventory(dict):
 
         Args:
           dformat: An instance of DisplayFormatter.
-          parents: A boolean, true if we should surround the results by parentheses.
+          parens: A boolean, true if we should surround the results by parentheses.
         Returns:
           A formatted string of the quantized amount and symbol.
         """
-        fmt = '({})' if parens else '{}'
-        return fmt.format(
-            ', '.join(pos.to_string(dformat) for pos in sorted(self)))
+        fmt = "({})" if parens else "{}"
+        return fmt.format(", ".join(pos.to_string(dformat) for pos in sorted(self)))
 
     def __str__(self):
         """Render as a human-readable string.
@@ -159,8 +165,7 @@ class Inventory(dict):
                     return False
             small = True
         else:
-            small = not any(abs(position.units.number) > tolerances
-                            for position in self)
+            small = not any(abs(position.units.number) > tolerances for position in self)
         return small
 
     def is_mixed(self):
@@ -190,8 +195,9 @@ class Inventory(dict):
             return False
         for position in self:
             units = position.units
-            if (ramount.currency == units.currency and
-                not same_sign(ramount.number, units.number)):
+            if ramount.currency == units.currency and not same_sign(
+                ramount.number, units.number
+            ):
                 return True
         return False
 
@@ -234,14 +240,12 @@ class Inventory(dict):
         return set(currency for currency, _ in self.keys())
 
     def cost_currencies(self):
-        """Return the list of unit currencies held in this inventory.
+        """Return the set of unit currencies held in this inventory.
 
         Returns:
           A set of currency strings.
         """
-        return set(cost.currency
-                   for _, cost in self.keys()
-                   if cost is not None)
+        return set(cost.currency for _, cost in self.keys() if cost is not None)
 
     def currency_pairs(self):
         """Return the commodities held in this inventory.
@@ -265,12 +269,13 @@ class Inventory(dict):
         """
         if len(self) > 0:
             if len(self) > 1:
-                raise AssertionError("Inventory has more than one expected "
-                                     "position: {}".format(self))
+                raise AssertionError(
+                    "Inventory has more than one expected position: {}".format(self)
+                )
             return next(iter(self))
 
     def get_currency_units(self, currency):
-        """Fetch the total amount across all the position in the given currency.
+        """Fetch the total amount across all the positions in the given currency.
         This may sum multiple lots in the same currency denomination.
 
         Args:
@@ -294,12 +299,11 @@ class Inventory(dict):
         Returns:
           A dict of currency to Inventory instances.
         """
-        per_currency_dict = {currency: Inventory()
-                             for currency in currencies}
+        per_currency_dict = {currency: Inventory() for currency in currencies}
         per_currency_dict[None] = Inventory()
         for position in self:
             currency = position.units.currency
-            key = (currency if currency in currencies else None)
+            key = currency if currency in currencies else None
             per_currency_dict[key].add_position(position)
         return per_currency_dict
 
@@ -314,6 +318,8 @@ class Inventory(dict):
             per_currency_dict[position.units.currency].add_position(position)
         return dict(per_currency_dict)
 
+    # TODO(blais): We could use a new method that computes the aggregated units
+    # and cost for each currency.
 
     #
     # Methods to convert an Inventory into another.
@@ -324,11 +330,17 @@ class Inventory(dict):
     # get inserted elsewhere on the balance sheet (e.g. to an unrealized gains
     # account). This should be a natural by-product of conversions and operators
     # should be modified to make this obvious or even difficult to ignore.
+    #
+    # TODO(blais): This returns another Inventory instance; rename this function
+    # to "map()" and create a proper "reduce()" in the new API.
     def reduce(self, reducer, *args):
         """Reduce an inventory using one of the conversion functions.
 
         See functions in beancount.core.convert.
 
+        Args:
+          reducer: A function that accepts a Position and returns an Amount.
+          *args: Additional arguments to be passed to the reducer function.
         Returns:
           An instance of Inventory.
         """
@@ -347,32 +359,34 @@ class Inventory(dict):
         """
         groups = collections.defaultdict(list)
         for position in self:
-            key = (position.units.currency,
-                   position.cost.currency if position.cost else None)
+            key = (
+                position.units.currency,
+                position.cost.currency if position.cost else None,
+            )
             groups[key].append(position)
 
         average_inventory = Inventory()
         for (currency, cost_currency), positions in groups.items():
-            total_units = sum(position.units.number
-                              for position in positions)
+            total_units = sum(position.units.number for position in positions)
             # Explicitly skip aggregates when resulting in zero units.
             if total_units == ZERO:
                 continue
             units_amount = Amount(total_units, currency)
 
             if cost_currency:
-                total_cost = sum(convert.get_cost(position).number
-                                 for position in positions)
-                cost_number = (Decimal('Infinity')
-                               if total_units == ZERO
-                               else (total_cost / total_units))
+                total_cost = sum(
+                    convert.get_cost(position).number for position in positions
+                )
+                cost_number = (
+                    Decimal("Infinity")
+                    if total_units == ZERO
+                    else (total_cost / total_units)
+                )
                 min_date = None
                 for pos in positions:
                     pos_date = pos.cost.date if pos.cost else None
                     if pos_date is not None:
-                        min_date = (pos_date
-                                    if min_date is None
-                                    else min(min_date, pos_date))
+                        min_date = pos_date if min_date is None else min(min_date, pos_date)
                 cost = Cost(cost_number, cost_currency, min_date, None)
             else:
                 cost = None
@@ -381,12 +395,13 @@ class Inventory(dict):
 
         return average_inventory
 
-
     #
     # Methods to build an Inventory instance.
     #
 
-    def add_amount(self, units, cost=None):
+    def add_amount(
+        self, units: Amount, cost: Cost | None = None
+    ) -> tuple[Position | None, MatchResult]:
         """Add to this inventory using amount and cost. This adds with strict lot
         matching, that is, no partial matches are done on the arguments to the
         keys of the inventory.
@@ -402,10 +417,12 @@ class Inventory(dict):
           e.g. the position was deleted.
         """
         if ASSERTS_TYPES:
-            assert isinstance(units, Amount), (
-                "Internal error: {!r} (type: {})".format(units, type(units).__name__))
+            assert isinstance(units, Amount), "Internal error: {!r} (type: {})".format(
+                units, type(units).__name__
+            )
             assert cost is None or isinstance(cost, Cost), (
-                "Internal error: {!r} (type: {})".format(cost, type(cost).__name__))
+                "Internal error: {!r} (type: {})".format(cost, type(cost).__name__)
+            )
 
         # Find the position.
         key = (units.currency, cost)
@@ -415,12 +432,14 @@ class Inventory(dict):
             # Note: In order to augment or reduce, all the fields have to match.
 
             # Check if reducing.
-            booking = (MatchResult.REDUCED
-                       if not same_sign(pos.units.number, units.number)
-                       else MatchResult.AUGMENTED)
+            booking = (
+                MatchResult.REDUCED
+                if not same_sign(pos.units.number, units.number)  # type: ignore[arg-type]
+                else MatchResult.AUGMENTED
+            )
 
             # Compute the new number of units.
-            number = pos.units.number + units.number
+            number = pos.units.number + units.number  # type: ignore[operator]
             if number == ZERO:
                 # If empty, delete the position.
                 del self[key]
@@ -437,23 +456,30 @@ class Inventory(dict):
 
         return pos, booking
 
-    def add_position(self, position):
+    def add_position(
+        self, position: Position | data.Posting
+    ) -> tuple[Position | None, MatchResult]:
         """Add using a position (with strict lot matching).
-        Return True if this position was booked against and reduced another.
 
         Args:
           position: The Posting or Position to add to this inventory.
         Returns:
-          A pair of (position, booking) where 'position' is the position that
+          A pair of (position, matched) where 'position' is the position that
           that was modified, and where 'matched' is a MatchResult enum that
           hints at how the lot was booked to this inventory.
         """
         if ASSERTS_TYPES:
-            assert hasattr(position, 'units') and hasattr(position, 'cost'), (
-                "Invalid type for position: {}".format(position))
+            assert hasattr(position, "units") and hasattr(position, "cost"), (
+                "Invalid type for position: {}".format(position)
+            )
             assert isinstance(position.cost, (type(None), Cost)), (
-                "Invalid type for cost: {}".format(position.cost))
-        return self.add_amount(position.units, position.cost)
+                "Invalid type for cost: {}".format(position.cost)
+            )
+        return self.add_amount(
+            # Ignore the type errors, units could be None or cost a CostSpec
+            position.units,  # type: ignore[arg-type]
+            position.cost,  # type: ignore[arg-type]
+        )
 
     def add_inventory(self, other):
         """Add all the positions of another Inventory instance to this one.
@@ -489,7 +515,7 @@ class Inventory(dict):
     __iadd__ = add_inventory
 
     @staticmethod
-    def from_string(string):
+    def from_string(string: str) -> Inventory:
         """Create an Inventory from a string. This is useful for writing tests.
 
         Args:
@@ -502,7 +528,8 @@ class Inventory(dict):
         # We need to split the comma-separated positions but ignore commas
         # occurring within a {...cost...} specification.
         position_strs = re.split(
-            r'([-+]?[0-9,.]+\s+[A-Z]+\s*(?:{[^}]*})?)\s*,?\s*', string)[1::2]
+            r"([-+]?[0-9,.]+\s+[A-Z]+\s*(?:{[^}]*})?)\s*,?\s*", string
+        )[1::2]
         for position_str in position_strs:
             new_inventory.add_position(position_from_string(position_str))
         return new_inventory
@@ -511,13 +538,13 @@ class Inventory(dict):
 from_string = Inventory.from_string
 
 
-def check_invariants(inv):
+def check_invariants(inv: Inventory) -> None:
     """Check the invariants of the Inventory.
 
     Args:
-      inventory: An instance of Inventory.
+      inv: An instance of Inventory.
     Returns:
-      True if the invariants are respected.
+      If the invariants are respected, otherwise throws an AssertionError.
     """
     # Check that all the keys are unique.
     lots = set((pos.units.currency, pos.cost) for pos in inv)

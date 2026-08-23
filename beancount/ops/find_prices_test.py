@@ -1,17 +1,16 @@
-"""Tests for price finding routines.
-"""
-__copyright__ = "Copyright (C) 2015-2016  Martin Blais"
+"""Tests for price finding routines."""
+
+__copyright__ = "Copyright (C) 2015-2020, 2024-2025  Martin Blais"
 __license__ = "GNU GPLv2"
 
 import datetime
 import unittest
 
-from beancount.ops import find_prices
 from beancount import loader
+from beancount.ops import find_prices
 
 
 class TestFromFile(unittest.TestCase):
-
     @loader.load_doc()
     def setUp(self, entries, _, __):
         """
@@ -20,11 +19,13 @@ class TestFromFile(unittest.TestCase):
         2000-01-10 open Assets:Cash
         2000-01-10 open Assets:External
         2000-01-10 open Expenses:Foreign
+        2015-11-12 open Assets:US:Investments:USDT
 
         2010-01-01 commodity USD
         2010-01-01 commodity QQQ
         2010-01-01 commodity XSP
         2010-01-01 commodity AMTKPTS
+        2015-11-12 commodity USDT
 
         2015-02-06 *
           Assets:Cash                     1505.00 USD
@@ -63,53 +64,77 @@ class TestFromFile(unittest.TestCase):
         2015-10-13 *
           Assets:Cash                        -1000.00 EUR @ 140.004 JPY
           Expenses:Foreign                     140004 JPY
+
+        ;; Zero-balanced commodity
+        2015-11-12 *
+          Assets:US:Investments:USDT          1000.00 USDT
+          Assets:External
         """
         self.entries = entries
 
     def test_find_currencies_converted(self):
         currencies = find_prices.find_currencies_converted(self.entries, None)
-        self.assertEqual({('GBP', 'USD'), ('USD', 'CAD'), ('EUR', 'JPY')}, currencies)
+        self.assertEqual({("GBP", "USD"), ("USD", "CAD"), ("EUR", "JPY")}, currencies)
 
-        currencies = find_prices.find_currencies_converted(self.entries,
-                                                           datetime.date(2015, 5, 1))
-        self.assertEqual({('GBP', 'USD')}, currencies)
+        currencies = find_prices.find_currencies_converted(
+            self.entries, datetime.date(2015, 5, 1)
+        )
+        self.assertEqual({("GBP", "USD")}, currencies)
 
-        currencies = find_prices.find_currencies_converted(self.entries,
-                                                           datetime.date(2015, 1, 15))
+        currencies = find_prices.find_currencies_converted(
+            self.entries, datetime.date(2015, 1, 15)
+        )
         self.assertEqual(set(), currencies)
 
     def test_find_currencies_at_cost(self):
         currencies = find_prices.find_currencies_at_cost(self.entries)
-        self.assertEqual({('XSP', 'CAD'), ('QQQ', 'USD')}, currencies)
+        self.assertEqual({("XSP", "CAD"), ("QQQ", "USD")}, currencies)
 
     def test_find_currencies_priced(self):
         currencies = find_prices.find_currencies_priced(self.entries)
-        self.assertEqual({('XSP', 'USD'), ('GBP', 'USD'), ('GBP', 'CAD')}, currencies)
+        self.assertEqual({("XSP", "USD"), ("GBP", "USD"), ("GBP", "CAD")}, currencies)
 
-        currencies = find_prices.find_currencies_priced(self.entries,
-                                                        datetime.date(2015, 12, 1))
-        self.assertEqual({('GBP', 'USD'), ('GBP', 'CAD')}, currencies)
+        currencies = find_prices.find_currencies_priced(
+            self.entries, datetime.date(2015, 12, 1)
+        )
+        self.assertEqual({("GBP", "USD"), ("GBP", "CAD")}, currencies)
 
     def test_find_balance_currencies(self):
         currencies = find_prices.find_balance_currencies(self.entries, None)
-        self.assertEqual({('QQQ', 'USD'),
-                          ('GBP', 'USD'), ('GBP', 'CAD'), ('USD', 'CAD')}, currencies)
+        self.assertEqual(
+            {("QQQ", "USD"), ("GBP", "USD"), ("GBP", "CAD"), ("USD", "CAD")}, currencies
+        )
 
-        currencies = find_prices.find_balance_currencies(self.entries,
-                                                         datetime.date(2015, 12, 1))
-        self.assertEqual({('XSP', 'CAD'),
-                          ('QQQ', 'USD'), ('GBP', 'USD'), ('GBP', 'CAD'), ('USD', 'CAD')},
-                         currencies)
+        currencies = find_prices.find_balance_currencies(
+            self.entries, datetime.date(2015, 12, 1)
+        )
+        self.assertEqual(
+            {
+                ("XSP", "CAD"),
+                ("QQQ", "USD"),
+                ("GBP", "USD"),
+                ("GBP", "CAD"),
+                ("USD", "CAD"),
+            },
+            currencies,
+        )
 
-        currencies = find_prices.find_balance_currencies(self.entries,
-                                                         datetime.date(2015, 11, 1))
-        self.assertEqual({('QQQ', 'USD'),
-                          ('GBP', 'USD'), ('GBP', 'CAD'), ('USD', 'CAD')}, currencies)
+        currencies = find_prices.find_balance_currencies(
+            self.entries, datetime.date(2015, 11, 1)
+        )
+        self.assertEqual(
+            {("QQQ", "USD"), ("GBP", "USD"), ("GBP", "CAD"), ("USD", "CAD")}, currencies
+        )
 
-        currencies = find_prices.find_balance_currencies(self.entries,
-                                                         datetime.date(2015, 2, 1))
+        currencies = find_prices.find_balance_currencies(
+            self.entries, datetime.date(2015, 2, 1)
+        )
         self.assertEqual(set(), currencies)
 
+    def test_find_unpriced_currencies(self):
+        currencies = find_prices.find_unpriced_currencies(self.entries, None)
+        self.assertEqual({"USDT", "CAD"}, currencies)
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     unittest.main()

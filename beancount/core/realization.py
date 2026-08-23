@@ -15,7 +15,8 @@ final balance of that account, resulting from its list of postings.
 You should not build RealAccount trees yourself; instead, you should filter the
 list of desired directives to display and call the realize() function with them.
 """
-__copyright__ = "Copyright (C) 2013-2016  Martin Blais"
+
+__copyright__ = "Copyright (C) 2013-2021, 2024-2026  Martin Blais"
 __license__ = "GNU GPLv2"
 
 import collections
@@ -24,33 +25,34 @@ import functools
 import io
 import operator
 
-from beancount.core.data import Transaction
-from beancount.core.data import Posting
-from beancount.core.data import TxnPosting
-from beancount.core.data import Balance
-from beancount.core.data import Open
-from beancount.core.data import Close
-from beancount.core.data import Pad
-from beancount.core.data import Note
-from beancount.core.data import Document
-from beancount.core.data import Custom
-from beancount.core import inventory
-from beancount.core import amount
-from beancount.core import data
 from beancount.core import account
+from beancount.core import amount
 from beancount.core import convert
+from beancount.core import data
+from beancount.core import inventory
+from beancount.core.data import Balance
+from beancount.core.data import Close
+from beancount.core.data import Custom
+from beancount.core.data import Document
+from beancount.core.data import Note
+from beancount.core.data import Open
+from beancount.core.data import Pad
+from beancount.core.data import Posting
+from beancount.core.data import Transaction
+from beancount.core.data import TxnPosting
 
 
-class RealAccount(dict):
+class RealAccount(dict):  # noqa: PLW1641
     """A realized account, inserted in a tree, that contains the list of realized entries.
 
     Attributes:
       account: A string, the full name of the corresponding account.
-      postings: A list of postings associated with this accounting (does not
+      txn_postings: A list of postings associated with this accounting (does not
         include the postings of children accounts).
       balance: The final balance of the list of postings associated with this account.
     """
-    __slots__ = ('account', 'txn_postings', 'balance')
+
+    __slots__ = ("account", "txn_postings", "balance")
 
     def __init__(self, account_name, *args, **kwargs):
         """Create a RealAccount instance.
@@ -79,8 +81,11 @@ class RealAccount(dict):
         if not isinstance(value, RealAccount):
             raise ValueError("Invalid RealAccount value: '{}'".format(value))
         if not value.account.endswith(key):
-            raise ValueError("RealAccount name '{}' inconsistent with key: '{}'".format(
-                value.account, key))
+            raise ValueError(
+                "RealAccount name '{}' inconsistent with key: '{}'".format(
+                    value.account, key
+                )
+            )
         return super().__setitem__(key, value)
 
     def copy(self):
@@ -103,10 +108,12 @@ class RealAccount(dict):
         Returns:
           A boolean, True if the two real accounts are equal.
         """
-        return (dict.__eq__(self, other) and
-                self.account == other.account and
-                self.balance == other.balance and
-                self.txn_postings == other.txn_postings)
+        return (
+            dict.__eq__(self, other)
+            and self.account == other.account
+            and self.balance == other.balance
+            and self.txn_postings == other.txn_postings
+        )
 
     def __ne__(self, other):
         """Not-equality predicate. See __eq__.
@@ -129,18 +136,11 @@ def iter_children(real_account, leaf_only=False):
       Instances of RealAccount, beginning with this account. The order is
       undetermined.
     """
-    if leaf_only:
-        if len(real_account) == 0:
-            yield real_account
-        else:
-            for key, real_child in sorted(real_account.items()):
-                for real_subchild in iter_children(real_child, leaf_only):
-                    yield real_subchild
-    else:
+    if not leaf_only or len(real_account) == 0:
         yield real_account
-        for key, real_child in sorted(real_account.items()):
-            for real_subchild in iter_children(real_child):
-                yield real_subchild
+
+    for _, real_child in sorted(real_account.items()):
+        yield from iter_children(real_child, leaf_only)
 
 
 def get(real_account, account_name, default=None):
@@ -198,6 +198,7 @@ def contains(real_account, account_name):
     """True if the given account node contains the subaccount name.
 
     Args:
+      real_account: An instance of RealAccount.
       account_name: A string, the name of a direct or indirect subaccount of
         this node.
     Returns:
@@ -258,7 +259,7 @@ def realize(entries, min_accounts=None, compute_balance=True):
     txn_postings_map = postings_by_account(entries)
 
     # Create a RealAccount tree and compute the balance for each.
-    real_root = RealAccount('')
+    real_root = RealAccount("")
     for account_name, txn_postings in txn_postings_map.items():
         real_account = get_or_create(real_root, account_name)
         real_account.txn_postings = txn_postings
@@ -291,12 +292,10 @@ def postings_by_account(entries):
     """
     txn_postings_map = collections.defaultdict(list)
     for entry in entries:
-
         if isinstance(entry, Transaction):
             # Insert an entry for each of the postings.
             for posting in entry.postings:
-                txn_postings_map[posting.account].append(
-                    TxnPosting(entry, posting))
+                txn_postings_map[posting.account].append(TxnPosting(entry, posting))
 
         elif isinstance(entry, (Open, Close, Balance, Note, Document)):
             # Append some other entries in the realized list.
@@ -417,7 +416,6 @@ def iterate_with_balance(txn_postings):
 
     first = lambda pair: pair[0]
     for txn_posting in txn_postings:
-
         # Get the posting if we are dealing with one.
         assert not isinstance(txn_posting, Posting)
         if isinstance(txn_posting, TxnPosting):
@@ -429,7 +427,8 @@ def iterate_with_balance(txn_postings):
 
         if entry.date != prev_date:
             assert prev_date is None or entry.date > prev_date, (
-                "Invalid date order for postings: {} > {}".format(prev_date, entry.date))
+                "Invalid date order for postings: {} > {}".format(prev_date, entry.date)
+            )
             prev_date = entry.date
 
             # Flush the dated entries.
@@ -480,8 +479,9 @@ def compute_balance(real_account, leaf_only=False):
     Returns:
       An Inventory.
     """
-    return functools.reduce(operator.add, [
-        ra.balance for ra in iter_children(real_account, leaf_only)])
+    return functools.reduce(
+        operator.add, [ra.balance for ra in iter_children(real_account, leaf_only)]
+    )
 
 
 def find_last_active_posting(txn_postings):
@@ -523,7 +523,7 @@ def index_key(sequence, value, key, cmp):
 
 
 def dump(root_account):
-    """Convert a RealAccount node to a line of lines.
+    """Convert a RealAccount node to a list of lines.
 
     Note: this is not meant to be used to produce text reports; the reporting
     code should produce an intermediate object that contains the structure of
@@ -547,13 +547,13 @@ def dump(root_account):
     # Start with the root node. We push the constant prefix before this node,
     # the account name, and the RealAccount instance. We will maintain a stack
     # of children nodes to render.
-    stack = [('', root_account.account, root_account, True)]
+    stack = [("", root_account.account, root_account, True)]
     while stack:
         prefix, name, real_account, is_last = stack.pop(-1)
 
         if real_account is root_account:
             # For the root node, we don't want to render any prefix.
-            first = cont = ''
+            first = cont = ""
         else:
             # Compute the string that precedes the name directly and the one below
             # that for the continuation lines.
@@ -580,9 +580,7 @@ def dump(root_account):
 
         # Add a line for this account.
         if not (real_account is root_account and not name):
-            lines.append((first + name,
-                          cont + cont_name,
-                          real_account))
+            lines.append((first + name, cont + cont_name, real_account))
 
         # Push the children onto the stack, being careful with ordering and
         # marking the last node as such.
@@ -600,17 +598,17 @@ def dump(root_account):
     # Compute the maximum width of the lines and convert all of them to the same
     # maximal width. This makes it easy on the client.
     max_width = max(len(first_line) for first_line, _, __ in lines)
-    line_format = '{{:{width}}}'.format(width=max_width)
-    return [(line_format.format(first_line),
-             line_format.format(cont_line),
-             real_node)
-            for (first_line, cont_line, real_node) in lines]
+    line_format = "{{:{width}}}".format(width=max_width)
+    return [
+        (line_format.format(first_line), line_format.format(cont_line), real_node)
+        for (first_line, cont_line, real_node) in lines
+    ]
 
 
-PREFIX_CHILD_1 = '|-- '
-PREFIX_CHILD_C = '|   '
-PREFIX_LEAF_1 = '`-- '
-PREFIX_LEAF_C = '    '
+PREFIX_CHILD_1 = "|-- "
+PREFIX_CHILD_C = "|   "
+PREFIX_LEAF_1 = "`-- "
+PREFIX_LEAF_C = "    "
 
 
 def dump_balances(real_root, dformat, at_cost=False, fullnames=False, file=None):
@@ -629,11 +627,13 @@ def dump_balances(real_root, dformat, at_cost=False, fullnames=False, file=None)
     """
     if fullnames:
         # Compute the maximum account name length;
-        maxlen = max(len(real_child.account)
-                     for real_child in iter_children(real_root, leaf_only=True))
-        line_format = '{{:{width}}} {{}}\n'.format(width=maxlen)
+        maxlen = max(
+            len(real_child.account)
+            for real_child in iter_children(real_root, leaf_only=True)
+        )
+        line_format = "{{:{width}}} {{}}\n".format(width=maxlen)
     else:
-        line_format = '{}       {}\n'
+        line_format = "{}       {}\n"
 
     output = file or io.StringIO()
     for first_line, cont_line, real_account in dump(real_root):
@@ -643,10 +643,12 @@ def dump_balances(real_root, dformat, at_cost=False, fullnames=False, file=None)
             else:
                 rinv = real_account.balance.reduce(convert.get_units)
             amounts = [position.units for position in rinv.get_positions()]
-            positions = [amount_.to_string(dformat)
-                         for amount_ in sorted(amounts, key=amount.sortkey)]
+            positions = [
+                amount_.to_string(dformat)
+                for amount_ in sorted(amounts, key=amount.sortkey)
+            ]
         else:
-            positions = ['']
+            positions = [""]
 
         if fullnames:
             for position in positions:
@@ -667,7 +669,7 @@ def compute_postings_balance(txn_postings):
     """Compute the balance of a list of Postings's or TxnPosting's positions.
 
     Args:
-      postings: A list of Posting instances and other directives (which are
+      txn_postings: A list of Posting instances and other directives (which are
         skipped).
     Returns:
       An Inventory.

@@ -1,37 +1,46 @@
-"""Code used to automatically complete postings without positions.
-"""
-__copyright__ = "Copyright (C) 2014-2017  Martin Blais"
+"""Code used to automatically complete postings without positions."""
+
+__copyright__ = "Copyright (C) 2013-2021, 2024-2025  Martin Blais"
 __license__ = "GNU GPLv2"
 
 import collections
 import copy
-
 from decimal import Decimal
+from typing import NamedTuple
 
-from beancount.core.number import D
+from beancount.core import convert
+from beancount.core import getters
+from beancount.core import inventory
+from beancount.core.amount import Amount
+from beancount.core.data import Balance
+from beancount.core.data import Meta
+from beancount.core.data import Posting
+from beancount.core.data import Transaction
+from beancount.core.inventory import Inventory
+from beancount.core.number import MISSING
 from beancount.core.number import ONE
 from beancount.core.number import ZERO
-from beancount.core.number import MISSING
-from beancount.core.amount import Amount
-from beancount.core.position import CostSpec
+from beancount.core.number import D
 from beancount.core.position import Cost
-from beancount.core.inventory import Inventory
-from beancount.core import inventory
-from beancount.core import convert
-from beancount.core.data import Transaction
-from beancount.core.data import Posting
-from beancount.core import getters
+from beancount.core.position import CostSpec
 from beancount.utils import defdict
-
 
 # An upper bound on the tolerance value, this is the maximum the tolerance
 # should ever be.
-MAXIMUM_TOLERANCE = D('0.5')
+MAXIMUM_TOLERANCE = D("0.5")
 
 
 # The maximum number of user-specified coefficient digits we should allow for a
 # tolerance setting.
 MAX_TOLERANCE_DIGITS = 5
+
+
+class BalanceError(NamedTuple):
+    """An error from balancing the postings."""
+
+    source: Meta
+    message: str
+    entry: Balance
 
 
 def is_tolerance_user_specified(tolerance):
@@ -47,11 +56,6 @@ def is_tolerance_user_specified(tolerance):
       A boolean.
     """
     return len(tolerance.as_tuple().digits) < MAX_TOLERANCE_DIGITS
-
-
-
-# An error from balancing the postings.
-BalanceError = collections.namedtuple('BalanceError', 'source message entry')
 
 
 def has_nontrivial_balance(posting):
@@ -90,7 +94,7 @@ def compute_residual(postings):
     return inventory
 
 
-def infer_tolerances(postings, options_map, use_cost=None):
+def infer_tolerances(postings, options_map, use_cost=None, mode="max"):
     """Infer tolerances from a list of postings.
 
     The tolerance is the maximum fraction that is being used for each currency
@@ -111,9 +115,9 @@ def infer_tolerances(postings, options_map, use_cost=None):
           Assets:Investments:VWELX 18.572 VWELX {30.96 USD}
           Assets:Investments:Cash -1150.00 USD
 
-    The tolerance for units of USD will calculated as the MAXIMUM of:
+    The tolerance for units of USD will be calculated as the MAXIMUM of:
 
-      0.01 * M = 0.005 (from the 1150.00 USD leg)
+      0.01 * M = 0.005 (0.01 is inferred from the 1150.00 USD leg)
 
       The sum of
         0.001 * M x 30.96 = 0.01548 +
@@ -123,8 +127,12 @@ def infer_tolerances(postings, options_map, use_cost=None):
     So the tolerance for USD in this case is max(0.005, 0.03096) = 0.03096. Prices
     contribute similarly to the maximum tolerance allowed.
 
-    Note that 'M' above is the inferred_tolerance_multiplier and its default
+    Note that 'M' above is the `tolerance_multiplier` and its default
     value is 0.5.
+
+    The 'mode' parameter can be either "max" or "min", and determines how
+    tolerances from multiple postings are aggregated. Use "min" to get the
+    highest precision seen, and "max" to get the loosest tolerance.
 
     Args:
       postings: A list of Posting instances.
@@ -133,17 +141,35 @@ def infer_tolerances(postings, options_map, use_cost=None):
         digit of the number times the cost or price in order to infer the tolerance.
         If the value is left unspecified (as 'None'), the default value can be
         overridden by setting an option.
+      mode: A string, either "max" or "min".
     Returns:
       A dict of currency to the tolerated difference amount to be used for it,
       e.g. 0.005.
     """
+    assert mode in ("max", "min")
+    agg = max if mode == "max" else min
+
     if use_cost is None:
         use_cost = options_map["infer_tolerance_from_cost"]
 
-    inferred_tolerance_multiplier = options_map["inferred_tolerance_multiplier"]
+    tolerance_multiplier = options_map["tolerance_multiplier"]
 
+    # Initialize the default tolerances to just the ones seen in this
+    # transaction.
     default_tolerances = options_map["inferred_tolerance_default"]
-    tolerances = default_tolerances.copy()
+    seen_currencies = set()
+    for posting in postings:
+        if posting.units not in {None, MISSING}:
+            seen_currencies.add(posting.units.currency)
+        if posting.cost:
+            seen_currencies.add(posting.cost.currency)
+        if posting.price:
+            seen_currencies.add(posting.price.currency)
+    tolerances = {
+        currency: tol
+        for currency, tol in default_tolerances.items()
+        if currency == "*" or currency in seen_currencies
+    }
 
     cost_tolerances = collections.defaultdict(D)
     for posting in postings:
@@ -159,9 +185,16 @@ def infer_tolerances(postings, options_map, use_cost=None):
         expo = units.number.as_tuple().exponent
         if expo < 0:
             # Note: the exponent is a negative value.
-            tolerance = ONE.scaleb(expo) * inferred_tolerance_multiplier
-            tolerances[currency] = max(tolerance,
-                                       tolerances.get(currency, -1024))
+            tolerance = ONE.scaleb(expo) * tolerance_multiplier
+
+            # Note that we take the max() and not the min() here because the
+            # tolerance has a dual purpose: it's used to infer the resolution
+            # for interpolation (where we might want the min()) and also for
+            # balance checks (where we favor the looser/larger tolerance).
+            if currency in tolerances:
+                tolerances[currency] = agg(tolerance, tolerances[currency])
+            else:
+                tolerances[currency] = tolerance
 
             if not use_cost:
                 continue
@@ -189,21 +222,24 @@ def infer_tolerances(postings, options_map, use_cost=None):
                 cost_tolerances[price_currency] += price_tolerance
 
     for currency, tolerance in cost_tolerances.items():
-        tolerances[currency] = max(tolerance, tolerances.get(currency, -1024))
+        if currency in tolerances:
+            tolerances[currency] = agg(tolerance, tolerances[currency])
+        else:
+            tolerances[currency] = tolerance
 
-    default = tolerances.pop('*', ZERO)
+    default = tolerances.pop("*", ZERO)
     return defdict.ImmutableDictWithDefault(tolerances, default=default)
 
 
 # Meta-data field appended to automatically inserted postings.
 # (Note: A better name might have been '__interpolated__'.)
-AUTOMATIC_META = '__automatic__'
+AUTOMATIC_META = "__automatic__"
 
 # Meta-data field appended to postings inserted to absorb rounding error.
-AUTOMATIC_RESIDUAL = '__residual__'
+AUTOMATIC_RESIDUAL = "__residual__"
 
 # Meta-data field added for the tolerances inferred for this entry.
-AUTOMATIC_TOLERANCES = '__tolerances__'
+AUTOMATIC_TOLERANCES = "__tolerances__"
 
 
 def get_residual_postings(residual, account_rounding):
@@ -216,11 +252,11 @@ def get_residual_postings(residual, account_rounding):
     Returns:
       A list of new postings to be inserted to reduce the given residual.
     """
-    meta = {AUTOMATIC_META: True,
-            AUTOMATIC_RESIDUAL: True}
-    return [Posting(account_rounding, -position.units, position.cost, None, None,
-                    meta.copy())
-            for position in residual.get_positions()]
+    meta = {AUTOMATIC_META: True, AUTOMATIC_RESIDUAL: True}
+    return [
+        Posting(account_rounding, -position.units, position.cost, None, None, meta.copy())
+        for position in residual.get_positions()
+    ]
 
 
 def fill_residual_posting(entry, account_rounding):
@@ -277,7 +313,7 @@ def compute_entries_balance(entries, prefix=None, date=None):
 
 
 def compute_entry_context(entries, context_entry, additional_accounts=None):
-    """Compute the balances of all accounts referenced by entry up to entry.
+    """Compute the balances of all accounts referenced by the entry up to entry.
 
     This provides the inventory of the accounts to which the entry is to be
     applied, before and after.
@@ -310,8 +346,7 @@ def compute_entry_context(entries, context_entry, additional_accounts=None):
             break
         if isinstance(entry, Transaction):
             for posting in entry.postings:
-                if not any(posting.account == account
-                           for account in context_accounts):
+                if not any(posting.account == account for account in context_accounts):
                     continue
                 balance = context_before[posting.account]
                 balance.add_position(posting)
@@ -339,6 +374,10 @@ def quantize_with_tolerance(tolerances, currency, number):
     # Applying rounding to the default tolerance, if there is one.
     tolerance = tolerances.get(currency)
     if tolerance:
+        # TODO(blais): "2" is used here but really it ought to be the reciprocal
+        # of the "tolerance_multiplier" value. The better fix would be to apply
+        # the multiplier late elsewhere, and to just not apply the multiplier
+        # here.
         quantum = (tolerance * 2).normalize()
 
         # If the tolerance is a neat number provided by the user,
